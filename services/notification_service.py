@@ -224,6 +224,142 @@ class FeishuNotificationService:
             logger.error(f"发送飞书通知时出错: {e}", exc_info=True)
             return False
 
+    async def send_tiktok_notification(
+        self,
+        video_id: str,
+        video_url: str,
+        video_description: str,
+        author_name: str,
+        comment_text: str,
+        like_text: str,
+        bookmark_text: str,
+        share_text: str
+    ) -> bool:
+        """
+        通过飞书webhook发送TikTok视频互动数据通知（消息卡片格式）。
+
+        Args:
+            video_id: TikTok 视频 ID
+            video_url: 视频 URL
+            video_description: 视频描述
+            author_name: 作者名称
+            comment_text: 评论文本（如 "4252 条评论"）
+            like_text: 点赞文本（如 "1.4M 个赞"）
+            bookmark_text: 收藏文本（如 "72.5K 人收藏"）
+            share_text: 分享文本（如 "43.4K 次分享"）
+
+        Returns:
+            如果通知发送成功返回True，否则返回False
+        """
+        try:
+            if not self.webhook_url:
+                logger.error("飞书webhook URL未配置，请设置 FEISHU_WEBHOOK_URL 环境变量")
+                return False
+
+            # 截断过长的视频描述
+            if len(video_description) > 200:
+                video_description = video_description[:200] + '...'
+
+            # 构建飞书消息卡片
+            card = {
+                "config": {
+                    "wide_screen_mode": True
+                },
+                "header": {
+                    "title": {
+                        "tag": "plain_text",
+                        "content": "🎵 TikTok 视频互动数据提醒"
+                    },
+                    "template": "green"
+                },
+                "elements": [
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**视频链接：** [{video_description}]({video_url})"
+                        }
+                    },
+                    {
+                        "tag": "hr"
+                    },
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**👤 作者：** {author_name}"
+                        }
+                    },
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**📊 互动数据：**\n" +
+                                       f"💬 评论：{comment_text}\n" +
+                                       f"❤️ 点赞：{like_text}\n" +
+                                       f"⭐ 收藏：{bookmark_text}\n" +
+                                       f"🔁 分享：{share_text}"
+                        }
+                    },
+                    {
+                        "tag": "action",
+                        "actions": [
+                            {
+                                "tag": "button",
+                                "text": {
+                                    "tag": "plain_text",
+                                    "content": " 立即查看视频"
+                                },
+                                "type": "primary",
+                                "url": video_url
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            # 构建完整的请求payload
+            payload = {
+                "msg_type": "interactive",
+                "card": card
+            }
+
+            # 生成签名（如果配置了签名密钥）
+            timestamp, sign = self._generate_signature()
+            if timestamp and sign:
+                payload['timestamp'] = timestamp
+                payload['sign'] = sign
+
+            headers = {
+                'Content-Type': 'application/json',
+            }
+
+            logger.info(
+                f"正在发送 TikTok 飞书通知：视频 {video_id}，作者 {author_name}，"
+                f"评论={comment_text}, 点赞={like_text}, 收藏={bookmark_text}, 分享={share_text}"
+            )
+
+            async with self.session.post(
+                self.webhook_url,
+                json=payload,
+                headers=headers,
+                timeout=10
+            ) as response:
+                response_text = await response.text()
+                if response.status in (200, 201):
+                    logger.info(f"TikTok 飞书通知发送成功，响应: {response_text}")
+                    return True
+                else:
+                    logger.error(
+                        f"发送 TikTok 飞书通知失败: HTTP {response.status}, "
+                        f"响应: {response_text}"
+                    )
+                    return False
+
+        except Exception as e:
+            logger.error(f"发送 TikTok 飞书通知时出错: {e}", exc_info=True)
+            return False
+
     async def send_test_notification(self) -> bool:
         """
         发送测试通知以验证飞书webhook是否正常工作。

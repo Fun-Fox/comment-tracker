@@ -7,7 +7,7 @@ from typing import Dict, Any, List, Optional
 from playwright.async_api import BrowserContext
 from loguru import logger
 
-from jobs.polling_job import PollingJob
+from jobs.xhs_polling_job import PollingJob
 from services.notification_service import FeishuNotificationService
 
 

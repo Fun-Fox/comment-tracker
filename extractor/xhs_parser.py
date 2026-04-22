@@ -7,8 +7,12 @@ import json
 import os
 from datetime import datetime
 from typing import Optional, Dict, Any, List
+from dotenv import load_dotenv
 from playwright.async_api import BrowserContext
 from loguru import logger
+
+# 加载环境变量
+load_dotenv()
 
 
 class XHSParser:
@@ -100,14 +104,15 @@ class XHSParser:
             # 在Python端解析数据
             note_data = self.parse_note_detail(note_detail[note_id], note_id)
 
-            # 调试：保存数据到文件
-            debug_dir = "debug_data"
-            os.makedirs(debug_dir, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            debug_file = os.path.join(debug_dir, f"xhs_parsed_{note_id}_{timestamp}.json")
-            with open(debug_file, 'w', encoding='utf-8') as f:
-                json.dump(note_data, f, ensure_ascii=False, indent=2)
-            logger.info(f"解析数据已保存到: {debug_file}")
+            # 调试：保存数据到文件（仅在 DEBUG 模式下）
+            if os.getenv('DEBUG', 'false').lower() == 'true':
+                debug_dir = "debug_data"
+                os.makedirs(debug_dir, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                debug_file = os.path.join(debug_dir, f"xhs_parsed_{note_id}_{timestamp}.json")
+                with open(debug_file, 'w', encoding='utf-8') as f:
+                    json.dump(note_data, f, ensure_ascii=False, indent=2)
+                logger.info(f"解析数据已保存到: {debug_file}")
 
             await page.close()
             return note_data

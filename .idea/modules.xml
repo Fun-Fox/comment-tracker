@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/xhs-job.iml" filepath="$PROJECT_DIR$/.idea/xhs-job.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/comment-tracker.iml" filepath="$PROJECT_DIR$/.idea/comment-tracker.iml" />
     </modules>
   </component>
 </project>

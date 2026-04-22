@@ -40,10 +40,13 @@ class PollingJob:
         self.last_poll_time = None
         self.poll_count = 0
         self.previous_comment_count = 0
+        self.retry_count = 0  # 当前重试次数
+        self.max_retries = 0  # 最大重试次数
         
         # 从环境变量读取轮询配置
-        self.poll_interval_minutes = int(os.getenv('POLL_INTERVAL_MINUTES', '30'))
-        self.poll_duration_minutes = int(os.getenv('POLL_DURATION_MINUTES', '60'))
+        self.poll_interval_minutes = int(os.getenv('XHS_POLL_INTERVAL_MINUTES', '30'))
+        self.poll_duration_minutes = int(os.getenv('XHS_POLL_DURATION_MINUTES', '60'))
+        self.max_retries = int(os.getenv('XHS_MAX_RETRIES', '3'))  # 最大重试次数
         
         # 计算最大轮询次数
         self.max_polls = self.poll_duration_minutes // self.poll_interval_minutes
@@ -59,7 +62,7 @@ class PollingJob:
         """
         try:
             self.status = 'running'
-            logger.info(f"开始轮询任务 {self.job_id}，间隔: {self.poll_interval_minutes}分钟，总时长: {self.poll_duration_minutes}分钟")
+            logger.info(f"开始轮询任务 {self.job_id}，间隔: {self.poll_interval_minutes}分钟，总时长: {self.poll_duration_minutes}分钟，最大重试: {self.max_retries}次")
 
             # 根据总时长和间隔动态轮询
             for i in range(self.max_polls):
@@ -68,8 +71,8 @@ class PollingJob:
                 logger.info(f"任务 {self.job_id}: 等待 {wait_time}秒后进行第 {i+1} 次轮询")
                 await asyncio.sleep(wait_time)
 
-                # 执行轮询
-                await self._perform_poll()
+                # 执行轮询（带重试机制）
+                success = await self._perform_poll_with_retry()
 
                 # 如果检测到评论，提前结束
                 if self.status == 'completed':
@@ -81,6 +84,36 @@ class PollingJob:
         except Exception as e:
             self.status = 'failed'
             logger.error(f"轮询任务 {self.job_id} 失败: {e}", exc_info=True)
+
+    async def _perform_poll_with_retry(self) -> bool:
+        """
+        执行带重试机制的轮询。
+        
+        Returns:
+            bool: 轮询是否成功
+        """
+        for attempt in range(self.max_retries + 1):  # 原始1次 + 重试N次
+            try:
+                await self._perform_poll()
+                return True  # 成功，退出重试
+            except Exception as e:
+                self.retry_count += 1
+                if attempt < self.max_retries:
+                    # 还有重试次数
+                    retry_wait = (attempt + 1) * 10  # 递增重试等待时间（10秒、20秒、30秒）
+                    logger.warning(
+                        f"小红书任务 {self.job_id}: 第 #{self.poll_count} 次轮询失败（尝试 {attempt + 1}/{self.max_retries + 1}）: {e}"
+                        f"\n将在 {retry_wait}秒后重试..."
+                    )
+                    await asyncio.sleep(retry_wait)
+                else:
+                    # 已用完所有重试次数
+                    logger.error(
+                        f"小红书任务 {self.job_id}: 第 #{self.poll_count} 次轮询彻底失败，已达最大重试次数 {self.max_retries}",
+                        exc_info=True
+                    )
+                    return False
+        return False
 
     async def _perform_poll(self):
         """
@@ -160,6 +193,8 @@ class PollingJob:
                 f"任务 {self.job_id}: 第 #{self.poll_count} 次轮询时出错: {e}",
                 exc_info=True
             )
+            # 将异常向上抛出，交由 _perform_poll_with_retry 处理
+            raise
 
     def get_status(self) -> Dict[str, Any]:
         """获取当前任务状态信息。"""

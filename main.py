@@ -1,12 +1,14 @@
 """
-小红书评论轮询任务服务
+小红书/TikTok 评论监控轮询任务服务
 
-一个基于FastAPI的服务，用于监控小红书帖子的新评论。
+一个基于FastAPI的服务，用于监控小红书和TikTok帖子的新评论。
 当通过API提交帖子URL时，它会启动一个轮询任务，
 检查评论并在检测到时发送通知。
 """
 import os
 import json
+import uuid
+import asyncio
 from contextlib import asynccontextmanager
 from typing import List
 from dotenv import load_dotenv
@@ -24,6 +26,7 @@ from loguru import logger
 
 from jobs.job_manager import JobManager
 from services.notification_service import FeishuNotificationService
+from jobs.tiktok_polling_job import TikTokPollingJob
 
 
 # 全局实例
@@ -36,39 +39,102 @@ browser = None
 
 # Cookie 管理
 xhs_cookies = []
+tiktok_cookies = []
+
+def parse_cookie_string_to_json(cookie_str: str, domain: str = ".xiaohongshu.com") -> list:
+    """将字符串格式的 Cookie 转换为 JSON 格式"""
+    cookies = []
+    for item in cookie_str.split(';'):
+        item = item.strip()
+        if not item or '=' not in item:
+            continue
+        name, value = item.split('=', 1)
+        cookies.append({
+            "name": name.strip(),
+            "value": value.strip(),
+            "domain": domain,
+            "path": "/"
+        })
+    return cookies
 
 def get_xhs_cookie_from_env() -> list:
-    """从环境变量读取 Cookie"""
+    """从环境变量读取小红书 Cookie（支持 JSON 和字符串两种格式）"""
     cookie_str = os.getenv('XHS_COOKIE', '')
     if not cookie_str:
         return []
     try:
-        return json.loads(cookie_str)
-    except:
-        logger.error("XHS_COOKIE 格式错误，应该是 JSON 数组")
+        # 尝试作为 JSON 解析
+        cookies = json.loads(cookie_str)
+        if isinstance(cookies, list):
+            return cookies
+        else:
+            logger.error("XHS_COOKIE 格式错误，应该是 JSON 数组")
+            return []
+    except json.JSONDecodeError:
+        # 如果不是 JSON，尝试作为字符串格式解析
+        logger.info("检测到字符串格式的 Cookie，正在转换为 JSON 格式...")
+        cookies = parse_cookie_string_to_json(cookie_str, ".xiaohongshu.com")
+        logger.info(f"成功转换 {len(cookies)} 个 Cookie")
+        return cookies
+    except Exception as e:
+        logger.error(f"解析 XHS_COOKIE 失败: {e}")
+        return []
+
+def get_tiktok_cookie_from_env() -> list:
+    """从环境变量读取 TikTok Cookie（支持 JSON 和字符串两种格式）"""
+    cookie_str = os.getenv('TIKTOK_COOKIE', '')
+    if not cookie_str:
+        return []
+    try:
+        # 尝试作为 JSON 解析
+        cookies = json.loads(cookie_str)
+        if isinstance(cookies, list):
+            return cookies
+        else:
+            logger.error("TIKTOK_COOKIE 格式错误，应该是 JSON 数组")
+            return []
+    except json.JSONDecodeError:
+        # 如果不是 JSON，尝试作为字符串格式解析
+        logger.info("检测到字符串格式的 Cookie，正在转换为 JSON 格式...")
+        cookies = parse_cookie_string_to_json(cookie_str, ".tiktok.com")
+        logger.info(f"成功转换 {len(cookies)} 个 Cookie")
+        return cookies
+    except Exception as e:
+        logger.error(f"解析 TIKTOK_COOKIE 失败: {e}")
         return []
 
 def set_xhs_cookies(cookies: list):
-    """设置全局 Cookie"""
+    """设置全局小红书 Cookie"""
     global xhs_cookies
     xhs_cookies = cookies
     # 更新环境变量
     os.environ['XHS_COOKIE'] = json.dumps(cookies)
-    logger.info(f"已更新 XHS Cookie，共 {len(cookies)} 个")
+    logger.info(f"已更新小红书 Cookie，共 {len(cookies)} 个")
+
+def set_tiktok_cookies(cookies: list):
+    """设置全局 TikTok Cookie"""
+    global tiktok_cookies
+    tiktok_cookies = cookies
+    # 更新环境变量
+    os.environ['TIKTOK_COOKIE'] = json.dumps(cookies)
+    logger.info(f"已更新 TikTok Cookie，共 {len(cookies)} 个")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """管理应用程序生命周期 - 初始化和清理。"""
-    global aiohttp_session, notification_service, job_manager, browser, browser_context, xhs_cookies
+    global aiohttp_session, notification_service, job_manager, browser, browser_context, xhs_cookies, tiktok_cookies
 
     # 启动
-    logger.info("正在启动小红书评论轮询服务...")
+    logger.info("正在启动小红书/TikTok 评论监控服务...")
     
     # 从环境变量加载 Cookie
     xhs_cookies = get_xhs_cookie_from_env()
+    tiktok_cookies = get_tiktok_cookie_from_env()
     if xhs_cookies:
-        logger.info(f"已加载 {len(xhs_cookies)} 个 XHS Cookie")
+        logger.info(f"已加载 {len(xhs_cookies)} 个小红书 Cookie")
+    if tiktok_cookies:
+        logger.info(f"已加载 {len(tiktok_cookies)} 个 TikTok Cookie")
     
     # 初始化Playwright浏览器 - 使用随机指纹
     playwright = await async_playwright().start()
@@ -118,9 +184,16 @@ async def lifespan(app: FastAPI):
         },
     }
     
+    # 配置代理（如果设置了 PLAYWRIGHT_PROXY）
+    playwright_proxy = os.getenv('PLAYWRIGHT_PROXY', '').strip()
+    if playwright_proxy:
+        context_options['proxy'] = {'server': playwright_proxy}
+        logger.info(f"已配置代理: {playwright_proxy}")
+    
     # 如果有 cookie，添加进去
-    if xhs_cookies:
-        context_options['storage_state'] = {'cookies': xhs_cookies}
+    if xhs_cookies or tiktok_cookies:
+        all_cookies = xhs_cookies + tiktok_cookies
+        context_options['storage_state'] = {'cookies': all_cookies}
     
     browser_context = await browser.new_context(**context_options)
     
@@ -176,12 +249,12 @@ async def lifespan(app: FastAPI):
     # 初始化模板引擎
     # templates = Jinja2Templates(directory="templates")
     
-    logger.info("服务启动成功")
+    logger.info("✅ 服务启动成功 - 支持小红书和TikTok评论监控")
 
     yield
 
     # 关闭
-    logger.info("正在关闭小红书评论轮询服务...")
+    logger.info("正在关闭小红书/TikTok 评论监控服务...")
     if browser_context:
         await browser_context.close()
     if aiohttp_session:
@@ -191,8 +264,8 @@ async def lifespan(app: FastAPI):
 
 # 创建FastAPI应用
 app = FastAPI(
-    title="小红书评论轮询服务",
-    description="监控小红书帖子的新评论并发送通知",
+    title="小红书/TikTok 评论监控服务",
+    description="监控小红书和TikTok帖子的新评论并发送通知",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -229,7 +302,11 @@ class JobStatusResponse(BaseModel):
     last_poll_time: str | None = None
     poll_count: int
     max_polls: int
-    previous_comment_count: int
+    platform: str = "xiaohongshu"
+    previous_comment_count: int = 0
+    previous_comment_text: str = "0"
+    retry_count: int = 0
+    max_retries: int = 0
 
 
 class HealthResponse(BaseModel):
@@ -237,48 +314,77 @@ class HealthResponse(BaseModel):
     status: str
     active_jobs: int
     total_jobs: int
+    platforms: List[str]
 
 
 # API端点
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """健康检查端点。"""
+    # 获取活跃任务的平台分布
+    platforms = []
+    for job in job_manager.jobs.values():
+        if job.status == 'running':
+            platform = 'tiktok' if hasattr(job, 'parser') and job.parser.__class__.__name__ == 'TikTokParser' else 'xiaohongshu'
+            if platform not in platforms:
+                platforms.append(platform)
+    
     return HealthResponse(
         status="healthy",
         active_jobs=job_manager.get_active_job_count(),
-        total_jobs=job_manager.get_total_job_count()
+        total_jobs=job_manager.get_total_job_count(),
+        platforms=platforms if platforms else ["xiaohongshu"]
     )
 
 
 @app.post("/api/v1/posts/monitor", response_model=SubmitPostResponse)
 async def submit_post(request: SubmitPostRequest):
     """
-    提交小红书帖子URL进行评论监控。
+    提交帖子URL进行评论监控（支持小红书和TikTok）。
 
     Args:
-        request: 包含小红书帖子URL
+        request: 包含帖子URL
 
     Returns:
         用于跟踪监控任务的Job ID
     """
     try:
-        # 验证URL包含小红书域名
-        if 'xiaohongshu.com' not in request.url:
+        url = request.url.lower()
+        
+        # 判断平台并创建对应的轮询任务
+        if 'tiktok.com' in url:
+            # TikTok 视频监控
+            job_id = str(uuid.uuid4())
+            job = TikTokPollingJob(job_id, request.url, browser_context, notification_service)
+            job_manager.jobs[job_id] = job
+            
+            # 启动异步任务
+            task = asyncio.create_task(job.run())
+            job_manager.tasks[job_id] = task
+            
+            logger.info(f"创建并启动TikTok监控任务 {job_id}，URL: {request.url}")
+            
+            return SubmitPostResponse(
+                job_id=job_id,
+                message="TikTok监控任务创建成功。",
+                url=request.url
+            )
+        elif 'xiaohongshu.com' in url or 'xhslink.com' in url:
+            # 小红书帖子监控
+            job_id = await job_manager.create_job(request.url)
+            
+            logger.info(f"提交小红书监控任务 {job_id}，URL: {request.url}")
+            
+            return SubmitPostResponse(
+                job_id=job_id,
+                message="小红书监控任务创建成功。",
+                url=request.url
+            )
+        else:
             raise HTTPException(
                 status_code=400,
-                detail="无效的URL。必须是有效的小红书帖子URL"
+                detail="无效的URL。必须是有效的小红书或TikTok帖子URL"
             )
-
-        # 创建轮询任务
-        job_id = await job_manager.create_job(request.url)
-
-        logger.info(f"提交了新的监控任务 {job_id}，URL: {request.url}")
-
-        return SubmitPostResponse(
-            job_id=job_id,
-            message="监控任务创建成功。",
-            url=request.url
-        )
 
     except HTTPException:
         raise
@@ -392,12 +498,21 @@ async def set_cookies(request_data: CookieRequest):
         if not isinstance(cookies, list):
             raise HTTPException(status_code=400, detail="Cookie 必须是 JSON 数组")
         
-        set_xhs_cookies(cookies)
-        
-        return {
-            "message": f"成功设置 {len(cookies)} 个 Cookie",
-            "count": len(cookies)
-        }
+        # 判断是哪个平台的 Cookie
+        if cookies and cookies[0].get('domain', '').endswith('tiktok.com'):
+            set_tiktok_cookies(cookies)
+            return {
+                "message": f"成功设置 {len(cookies)} 个 TikTok Cookie",
+                "count": len(cookies),
+                "platform": "tiktok"
+            }
+        else:
+            set_xhs_cookies(cookies)
+            return {
+                "message": f"成功设置 {len(cookies)} 个小红书 Cookie",
+                "count": len(cookies),
+                "platform": "xiaohongshu"
+            }
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Cookie 格式错误，必须是有效的 JSON")
 
@@ -405,27 +520,46 @@ async def set_cookies(request_data: CookieRequest):
 @app.get("/api/v1/cookies")
 async def get_cookies():
     """
-    获取当前 Cookie。
+    获取当前所有 Cookie。
     
     Returns:
         当前 Cookie 列表
     """
     return {
-        "cookies": xhs_cookies,
-        "count": len(xhs_cookies)
+        "xiaohongshu": {
+            "cookies": xhs_cookies,
+            "count": len(xhs_cookies)
+        },
+        "tiktok": {
+            "cookies": tiktok_cookies,
+            "count": len(tiktok_cookies)
+        },
+        "total": len(xhs_cookies) + len(tiktok_cookies)
     }
 
 
 @app.delete("/api/v1/cookies")
-async def clear_cookies():
+async def clear_cookies(platform: str = "all"):
     """
     清除所有 Cookie。
+    
+    Args:
+        platform: 要清除的平台，可选值: all/xiaohongshu/tiktok
     
     Returns:
         清除结果
     """
-    set_xhs_cookies([])
-    return {"message": "已清除所有 Cookie", "count": 0}
+    if platform == "all" or platform == "xiaohongshu":
+        set_xhs_cookies([])
+    if platform == "all" or platform == "tiktok":
+        set_tiktok_cookies([])
+    
+    return {
+        "message": f"已清除{platform if platform != 'all' else '所有'}Cookie",
+        "platform": platform,
+        "xiaohongshu_count": len(xhs_cookies),
+        "tiktok_count": len(tiktok_cookies)
+    }
 
 
 if __name__ == "__main__":
@@ -433,6 +567,18 @@ if __name__ == "__main__":
 
     host = os.getenv('HOST', '0.0.0.0')
     port = int(os.getenv('PORT', '8000'))
+    
+    # 生产环境配置
+    workers = int(os.getenv('UVICORN_WORKERS', '1'))
+    log_level = 'debug' if os.getenv('DEBUG', 'false').lower() == 'true' else 'info'
 
-    logger.info(f"在 {host}:{port} 上启动服务器")
-    uvicorn.run(app, host=host, port=port)
+    logger.info(f"在 {host}:{port} 上启动服务器 (workers={workers}, log_level={log_level})")
+    
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        workers=workers,
+        log_level=log_level,
+        access_log=False  # 关闭访问日志，减少磁盘 IO
+    )
