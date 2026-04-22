@@ -13,9 +13,5 @@ RestartSec=10
 StandardOutput=append:/home/callfans/data/comment-tracker/logs/service.log
 StandardError=append:/home/callfans/data/comment-tracker/logs/error.log
 
-# 安全设置
-NoNewPrivileges=true
-PrivateTmp=true
-
 [Install]
 WantedBy=multi-user.target

@@ -9,7 +9,7 @@ from typing import Dict, Any
 from playwright.async_api import BrowserContext
 from loguru import logger
 
-from parsers.xhs_parser import XHSParser
+from extractor.xhs_parser import XHSParser
 from services.notification_service import FeishuNotificationService
 
 

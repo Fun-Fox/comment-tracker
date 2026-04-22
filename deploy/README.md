@@ -112,7 +112,7 @@ sudo chown comment-tracker:comment-tracker .env
 ```bash
 # 复制 service 文件
 sudo cp deploy/comment-tracker.service /etc/systemd/system/
-
+sudo chmod 755 /home/callfans/data/comment-tracker/logs
 # 重新加载 systemd
 sudo systemctl daemon-reload
 
