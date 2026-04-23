@@ -6,12 +6,51 @@
 检查评论并在检测到时发送通知。
 """
 import os
+import sys
 import json
 import uuid
 import asyncio
 from contextlib import asynccontextmanager
 from typing import List
 from dotenv import load_dotenv
+from loguru import logger
+
+# 配置日志输出到文件
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
+
+# 移除默认的 console handler
+logger.remove()
+
+# 添加 console handler（输出到控制台）
+logger.add(
+    sys.stderr,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+    level="INFO" if os.getenv('DEBUG', 'false').lower() != 'true' else "DEBUG",
+    colorize=True
+)
+
+# 添加 file handler（输出到文件，按天轮转）
+logger.add(
+    os.path.join(log_dir, "comment-tracker_{time:YYYY-MM-DD}.log"),
+    rotation="00:00",  # 每天午夜轮转
+    retention="30 days",  # 保留30天
+    compression="zip",  # 压缩旧日志
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+    level="INFO" if os.getenv('DEBUG', 'false').lower() != 'true' else "DEBUG",
+    encoding="utf-8"
+)
+
+# 添加错误日志单独文件
+logger.add(
+    os.path.join(log_dir, "error_{time:YYYY-MM-DD}.log"),
+    rotation="00:00",
+    retention="90 days",  # 错误日志保留更久
+    compression="zip",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+    level="ERROR",
+    encoding="utf-8"
+)
 
 # 加载 .env 文件
 load_dotenv()
